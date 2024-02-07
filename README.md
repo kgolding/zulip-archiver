@@ -1,6 +1,6 @@
 # Zulip archiver to SQLite database
 
-Super simple way to archive your Zulip messages.
+Super simple way to archive your Zulip chat messages and files.
 
 ## Installation
 
@@ -11,7 +11,8 @@ Super simple way to archive your Zulip messages.
 ## Usage
 
 1. Create a Zulip Bot with an email address and make a note of the API key.
-2. `go run main.go <host> <email> [<api_key>]`
+2. `go run main.go data <host> <email> [<api_key>]` to download the messages
+2. `go run main.go files <host> <email> [<api_key>]` to download the avatars and files referenced to from within the messages (limited to files on the same host)
 
 * host: zulip server domain/IP e.g. chat.myzulipserver.com
 * email: address of the user account
@@ -24,6 +25,8 @@ The download takes some time, as there are limits on the Zulip APIs, so we pause
 * [X] Connect to Zulip server and download streams, topics & messages
 * [X] Download streams and save to DB
 * [X] Download messages and save to DB
-* [ ] Download avatar images
-* [ ] Download images/files referenced to in messages
+* [X] Download avatar images
+* [X] Download images/files referenced to in messages
+* [ ] Create web portal to view streams, messages, files
+* [ ] Implement search feature in web portal
 

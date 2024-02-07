@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -20,37 +22,136 @@ var email string
 var apiKey string
 
 var DBFileName = "zulip.db"
+var db *gorm.DB
 
 func main() {
-	if len(os.Args) < 3 {
-		log.Fatalf("Expected at least two args: %s <host> <email> [<password>]\nPassword can optionally be set in local environment as API_KEY", os.Args[0])
+	if len(os.Args) != 5 {
+		fmt.Printf("Usage: %s <data or files> <host> <email> <api_key>", os.Args[0])
+		os.Exit(1)
 	}
-	host = os.Args[1]
-	email = os.Args[2]
 
-	if len(os.Args) > 3 {
-		apiKey = os.Args[3]
+	cmd := os.Args[1]
+	host = os.Args[2]
+	email = os.Args[3]
+	apiKey = os.Args[4]
+
+	var err error
+
+	// Open database
+	db, err = gorm.Open(sqlite.Open(DBFileName), &gorm.Config{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		c, err := db.DB()
+		if err == nil {
+			c.Close()
+		}
+	}()
+
+	db.AutoMigrate(&Stream{})
+	db.AutoMigrate(&File{})
+	db.AutoMigrate(&Message{})
+
+	switch cmd {
+	case "data":
+		archive()
+
+	case "files":
+		avatars()
+		files()
+
+	default:
+		log.Fatal("unknown command")
+	}
+}
+
+func files() {
+	regFile := regexp.MustCompile(`(?:href|src)="(\/[^"]+)`)
+
+	// Process messages in batches of ten
+
+	offset := 0
+	limit := 10
+
+	var messages []Message
+	for {
+		err := db.Offset(offset).Limit(10).Find(&messages).Error
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for _, msg := range messages {
+			matches := regFile.FindAllStringSubmatch(msg.Content, -1)
+
+			for _, match := range matches {
+				getFile(match[1])
+			}
+		}
+		if len(messages) < limit {
+			break
+		}
+		messages = nil
+		offset += limit
+	}
+}
+
+func avatars() {
+	var avatars []string
+
+	err := db.Raw("SELECT DISTINCT avatar_url FROM messages").Scan(&avatars).Error
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Found %d Avatars", len(avatars))
+	for _, a := range avatars {
+		getFile(a)
+	}
+}
+
+func getFile(path string) {
+	var file File
+	var err error
+
+	db.Select("path").Where("path", path).First(&file)
+	if file.Path != "" {
+		log.Println("Skipping existing:", path)
+		return
+	}
+
+	file.Path = path
+	file.Data, file.ContentType, err = zulipGetFile(path)
+	file.Size = len(file.Data)
+	if err != nil {
+		log.Printf("Error downloading file: %s: %s", err, path)
+	} else {
+		log.Printf("%12d bytes: %s", len(file.Data), path)
+		err = db.Create(&file).Error
+		if err != nil {
+			log.Printf("Error creating file: %s: %s", err, path)
+		}
+		time.Sleep(time.Millisecond * 200)
+	}
+	file.Data = nil
+
+}
+
+func archive() {
+	if len(os.Args) < 3 {
+		log.Fatalf("Expected at least three args: %s download <host> <email> [<password>]\nPassword can optionally be set in local environment as API_KEY", os.Args[0])
+	}
+	host = os.Args[2]
+	email = os.Args[3]
+
+	if len(os.Args) > 4 {
+		apiKey = os.Args[4]
 	} else {
 		apiKey = os.Getenv("API_KEY")
 		if apiKey == "" {
 			log.Fatalf("Missing API_KEY either as third parameter or as API_KEY environment variable")
 		}
 	}
-
-	// Check database file doesn't already exist
-	if _, err := os.Stat(DBFileName); err == nil {
-		log.Fatalf("'%s aleady exists!", DBFileName)
-	}
-
-	// Open database
-	db, err := gorm.Open(sqlite.Open(DBFileName), &gorm.Config{})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	db.AutoMigrate(&Stream{})
-	// db.AutoMigrate(&Topic{})
-	db.AutoMigrate(&Message{})
 
 	streams, err := getStreams()
 	if err != nil {
@@ -145,43 +246,6 @@ func GetStreamTopicMessagesCB(Stream string, Topic string, CallBack func([]Messa
 	return nil
 }
 
-type Stream struct {
-	StreamID    uint   `json:"stream_id" gorm:"primaryKey"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
-
-type Topic struct {
-	MaxID uint   `json:"max_id"`
-	Name  string `json:"name" gorm:"unique"`
-}
-
-type Message struct {
-	MessageID      uint   `json:"id" gorm:"primaryKey"`
-	Timestamp      uint   `json:"timestamp"`
-	Content        string `json:"content"`
-	ContentType    string `json:"content_type"`
-	AvatarUrl      string `json:"avatar_url"`
-	Client         string `json:"client"`
-	SenderEmail    string `json:"sender_email"`
-	SenderFullName string `json:"sender_full_name"`
-	SenderID       uint   `json:"sender_id"`
-	StreamID       uint   `json:"stream_id"`
-	Subject        string `json:"subject"`
-}
-
-/*
-Message fields not added
-display_recipient: Data on the recipient of the message; either the name of a stream or a dictionary containing data on the users who received the message.
-flags: The user's message flags for the message.
-reactions: Data on any reactions to the message.
-recipient_id: A unique ID for the set of users receiving the message (either a stream or group of users). Useful primarily for hashing.
-sender_id: The user ID of the message's sender.
-sender_realm_str: A string identifier for the realm the sender is in.
-sender_short_name: Reserved for future use.
-subject_links: Data on any links to be included in the topic line (these are generated by custom linkification filters that match content in the message's topic.)
-*/
-
 type Result struct {
 	Result   string    `json:"result"`
 	Streams  []Stream  `json:"streams"`
@@ -216,6 +280,33 @@ func zulipGet(path string) (result *Result, err error) {
 	if err != nil {
 		return
 	}
+
+	return
+}
+
+func zulipGetFile(path string) (b []byte, contentType string, err error) {
+	url := "https://" + host + path
+	ctx, _ := context.WithTimeout(context.Background(), time.Minute)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	req.SetBasicAuth(email, apiKey)
+
+	ret, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+
+	defer ret.Body.Close()
+
+	if ret.StatusCode != 200 {
+		err = errors.New(ret.Status)
+	}
+
+	contentType = ret.Header.Get("Content-Type")
+
+	b, err = io.ReadAll(ret.Body)
 
 	return
 }
