@@ -12,11 +12,11 @@ Super simple way to archive your Zulip chat messages and files.
 
 1. Create a Zulip Bot with an email address and make a note of the API key.
 2. `go run main.go data <host> <email> [<api_key>]` to download the messages
-2. `go run main.go files <host> <email> [<api_key>]` to download the avatars and files referenced to from within the messages (limited to files on the same host)
+3. `go run main.go files <host> <email> [<api_key>]` to download the avatars and files referenced to from within the messages (limited to files on the same host)
 
-* host: zulip server domain/IP e.g. chat.myzulipserver.com
-* email: address of the user account
-* api_key: API key for the given email or can be set in the `API_KEY` environment variable
+    * `host`: zulip server domain/IP e.g. chat.myzulipserver.com
+    * `email`: address of the user account
+    * `api_key`: API key for the given email
 
 The download takes some time, as there are limits on the Zulip APIs, so we pause every second between calls which happen once for each topic or 200 messages thereof.
 
